@@ -18,11 +18,10 @@ func (b *Board) isTouchingFloor() bool {
 	return isTouching
 }
 
-// rotatePiece rotates the piece that the user is currently moving clockwise by
-// 90 degrees. The rotation is made and collision is checked. If the rotation can
-// be completed by moving the newly rotated shape, the rotation will also be
-// performed. If it is impossible to rotate, does nothing.
-func (b *Board) rotatePiece() {
+// rotatePiece rotates the piece that the user is currently moving.
+// direction 1 for clockwise, -1 for counter-clockwise.
+// Modern SRS (Super Rotation System) is implemented with wall kicks.
+func (b *Board) rotatePiece(direction int) {
 	// The O piece should not be rotated
 	if currentPiece == OPiece {
 		return
@@ -31,22 +30,96 @@ func (b *Board) rotatePiece() {
 	// Erase Piece
 	b.drawPiece(activeShape, Empty)
 
-	// Get the new shape and check for it's collision
-	newShape := rotateShape(activeShape)
-	if b.checkCollision(newShape) {
-		if !b.checkCollision(moveShapeRight(newShape)) {
-			newShape = moveShapeRight(newShape)
-		} else if !b.checkCollision(moveShapeLeft(newShape)) {
-			newShape = moveShapeLeft(newShape)
-		} else if !b.checkCollision(moveShapeDown(newShape)) {
-			newShape = moveShapeDown(newShape)
-		} else {
-			b.drawPiece(activeShape, blockType)
-			return
+	// Save the shape before rotation for T-spin detection
+	lastRotationPoint = activeShape
+
+	// Get the new shape based on rotation direction
+	var newShape Shape
+	if direction == 1 {
+		newShape = rotateShape(activeShape)
+	} else {
+		newShape = rotateShapeCounterClockwise(activeShape)
+	}
+
+	// Try to place with wall kicks
+	kicks := wallKickData(currentPiece, rotationState, direction)
+	rotated := false
+
+	for _, kick := range kicks {
+		kickedShape := moveShape(kick[1], kick[0], newShape) // x, y offset
+		if !b.checkCollision(kickedShape) {
+			// Wall kick succeeded
+			activeShape = kickedShape
+			rotated = true
+
+			// Update rotation state
+			rotationState = (rotationState + direction) % 4
+			if rotationState < 0 {
+				rotationState += 4
+			}
+
+			// Set flag for T-spin detection
+			lastMovementWasRotation = true
+			break
 		}
 	}
-	activeShape = newShape
+
+	if !rotated {
+		// Failed to rotate with any wall kick
+		b.drawPiece(activeShape, blockType)
+		return
+	}
+
 	b.drawPiece(activeShape, blockType)
+}
+
+// holdPiece allows the player to hold the current piece and retrieve a previously held piece
+func (b *Board) holdPiece() {
+	if !canHold {
+		return
+	}
+
+	// Erase current piece
+	b.drawPiece(activeShape, Empty)
+
+	if holdPiece == NoPiece {
+		// First hold - store current piece and get next piece
+		holdPiece = currentPiece
+		b.addPiece()
+	} else {
+		// Swap current piece with held piece
+		tempPiece := holdPiece
+		holdPiece = currentPiece
+
+		// Create the held piece
+		var offset int
+		if tempPiece == IPiece {
+			offset = rand.Intn(7)
+		} else if tempPiece == OPiece {
+			offset = rand.Intn(9)
+		} else {
+			offset = rand.Intn(8)
+		}
+		baseShape := getShapeFromPiece(tempPiece)
+		baseShape = moveShape(20, offset, baseShape)
+		b.fillShape(baseShape, piece2Block(tempPiece))
+		currentPiece = tempPiece
+		activeShape = baseShape
+		rotationState = 0 // Reset rotation state for new piece
+	}
+
+	canHold = false // Prevent multiple holds until next piece
+}
+
+// lockPiece finalizes the current piece position and adds a new piece
+func (b *Board) lockPiece() {
+	if isGameOver(activeShape) {
+		gameOver = true
+		return
+	}
+	b.checkRowCompletion(activeShape)
+	b.addPiece() // Replace with random piece
+	canHold = true // Enable hold for the next piece
 }
 
 // movePiece attemps to move the piece that the user is controlling either
@@ -61,6 +134,7 @@ func (b *Board) movePiece(dir int) {
 	didCollide := b.checkCollision(moveShape(0, dir, activeShape))
 	if !didCollide {
 		activeShape = moveShape(0, dir, activeShape)
+		lastMovementWasRotation = false // Reset T-spin detection
 	}
 	b.drawPiece(activeShape, blockType)
 }
@@ -100,19 +174,12 @@ func (b *Board) applyGravity() bool {
 
 	if !didCollide {
 		activeShape = moveShapeDown(activeShape)
+		lastMovementWasRotation = false // Reset T-spin detection
 	}
 
 	b.drawPiece(activeShape, blockType)
 
-	if didCollide {
-		if isGameOver(activeShape) {
-			gameOver = true
-		}
-		b.checkRowCompletion(activeShape)
-		b.addPiece() // Replace with random piece
-		return true
-	}
-	return false
+	return didCollide
 }
 
 // instafall calls the applyGravity function until a collision is detected.
@@ -121,11 +188,16 @@ func (b *Board) instafall() {
 	for !collide {
 		collide = b.applyGravity()
 	}
+	// Lock the piece immediately
+	b.lockPiece()
 }
 
 // checkRowCompletion checks if the rows in a given shape are filled (ie should
 // be deleted). If full, deletes the rows.
 func (b *Board) checkRowCompletion(s Shape) {
+	// Check for T-spin before any rows are deleted
+	tSpin := isTSpin(*b)
+
 	// Ony the rows of the shape can be filled
 	rowWasDeleted := true
 	// Since when we delete a row it can be shifted down, repeatedly try
@@ -147,15 +219,38 @@ func (b *Board) checkRowCompletion(s Shape) {
 			if !emptyFound {
 				b.deleteRow(r)
 				rowWasDeleted = true
-				score += 200
 				deleteRowCt++
 			}
 		}
 	}
-	// Bonus score for combos over one
-	if deleteRowCt > 1 {
-		score += (deleteRowCt - 1) * 200
+
+	// Score based on number of lines cleared and T-spin
+	if deleteRowCt > 0 {
+		// Base score for line clears
+		baseScore := 100 * deleteRowCt
+
+		// Bonus for multiple lines
+		if deleteRowCt > 1 {
+			baseScore *= deleteRowCt
+		}
+
+		// T-spin bonus (modern scoring)
+		if tSpin {
+			// T-spin bonus is 2x for a single, 3x for double, 4x for triple
+			baseScore *= (deleteRowCt + 1)
+			// Additional bonus for T-spin
+			baseScore += 400
+		}
+
+		// Add to score
+		score += baseScore
+	} else if tSpin {
+		// Mini T-spin (no lines cleared)
+		score += 100
 	}
+
+	// Reset T-spin detection
+	lastMovementWasRotation = false
 }
 
 // deleteRow remoes a row by shifting everything above it down by one.
@@ -196,7 +291,8 @@ func (b *Board) addPiece() {
 	b.fillShape(baseShape, piece2Block(nextPiece))
 	currentPiece = nextPiece
 	activeShape = baseShape
-	nextPiece = Piece(rand.Intn(7))
+	nextPiece = getNextPiece() // Use 7-bag system instead of random
+	rotationState = 0 // Reset rotation state for new piece
 }
 
 // displayBoard displays a particular game board with all of its pieces

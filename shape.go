@@ -77,6 +77,25 @@ func rotateShape(s Shape) Shape {
 	return retShape
 }
 
+// rotateShapeCounterClockwise rotates a shape 90 degrees counter-clockwise
+// based on the pivot point which is always the second element (s[1]).
+func rotateShapeCounterClockwise(s Shape) Shape {
+	var retShape Shape
+	pivot := s[1]
+	retShape[1] = pivot
+	for i := 0; i < 4; i++ {
+		// Index 1 is the pivot point
+		if i == 1 {
+			continue
+		}
+		dRow := pivot.row - s[i].row
+		dCol := pivot.col - s[i].col
+		retShape[i].row = pivot.row + dCol
+		retShape[i].col = pivot.col + (dRow * -1)
+	}
+	return retShape
+}
+
 // getShapeFromPiece returns the shape based on the piece type. There
 // are seven shapes available: LPiece, IPiece, OPiece, TPiece, SPiece,
 // ZPiece, and JPiece.
@@ -136,5 +155,59 @@ func getShapeFromPiece(p Piece) Shape {
 		panic("getShapeFromPiece(Piece): Invalid piece entered")
 	}
 	return retShape
+}
 
+// wallKickData returns the wall kick offsets to test for the given piece and rotation.
+// According to SRS (Super Rotation System) rules.
+// state is the current rotation state (0-3), where:
+// 0 = spawn state, 1 = rotated right once, 2 = rotated twice, 3 = rotated left once
+// direction is 1 for clockwise, -1 for counter-clockwise
+func wallKickData(piece Piece, state int, direction int) [][2]int {
+	// Get the new state based on direction
+	newState := (state + direction) % 4
+	if newState < 0 {
+		newState += 4
+	}
+
+	// Different wall kick data for I piece vs JLSTZ pieces
+	if piece == IPiece {
+		// I piece wall kick data
+		kicks := [][][2]int{
+			// 0>>1 or 0>>3
+			{{0, 0}, {-2, 0}, {1, 0}, {-2, -1}, {1, 2}},
+			// 1>>2 or 1>>0
+			{{0, 0}, {-1, 0}, {2, 0}, {-1, 2}, {2, -1}},
+			// 2>>3 or 2>>1
+			{{0, 0}, {2, 0}, {-1, 0}, {2, 1}, {-1, -2}},
+			// 3>>0 or 3>>2
+			{{0, 0}, {1, 0}, {-2, 0}, {1, -2}, {-2, 1}},
+		}
+
+		// For counter-clockwise kicks, we need to reverse the x,y values
+		if direction == -1 {
+			return kicks[(state+1)%4]
+		}
+		return kicks[state]
+	} else if piece != OPiece { // JLSTZ pieces (O piece doesn't rotate)
+		// JLSTZ pieces wall kick data
+		kicks := [][][2]int{
+			// 0>>1 or 0>>3
+			{{0, 0}, {-1, 0}, {-1, 1}, {0, -2}, {-1, -2}},
+			// 1>>2 or 1>>0
+			{{0, 0}, {1, 0}, {1, -1}, {0, 2}, {1, 2}},
+			// 2>>3 or 2>>1
+			{{0, 0}, {1, 0}, {1, 1}, {0, -2}, {1, -2}},
+			// 3>>0 or 3>>2
+			{{0, 0}, {-1, 0}, {-1, -1}, {0, 2}, {-1, 2}},
+		}
+
+		// For counter-clockwise kicks, we need to use the appropriate row
+		if direction == -1 {
+			return kicks[(state+1)%4]
+		}
+		return kicks[state]
+	}
+
+	// O piece doesn't need wall kicks
+	return [][2]int{{0, 0}}
 }
