@@ -121,13 +121,13 @@ func run() {
 	if err != nil {
 		panic(err)
 	}
-	blockGen, err = ss.LoadSpriteSheet(pwd+"/blocks.png", 2, 8)
+	blockGen, err = ss.LoadSpriteSheet(pwd+"/resources/blocks.png", 2, 8)
 	if err != nil {
 		panic(err)
 	}
 
 	// Background image, by ansimuz on opengameart.org
-	bgPic, err := ss.LoadPicture(pwd + "/parallax-mountain-bg.png")
+	bgPic, err := ss.LoadPicture(pwd + "/resources/parallax-mountain-bg.png")
 	if err != nil {
 		panic(err)
 	}
