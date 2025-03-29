@@ -81,13 +81,13 @@ const speedUpRate = 0.1  // Every new level, the amount the game speeds up by
 
 // DAS (Delayed Auto Shift) and ARR (Auto Repeat Rate) constants
 const (
-	DASDelay = 0.033         // Reduced initial delay for more responsive control
-	ARRRate  = 0.033         // Faster repeat rate for better responsiveness
-	ControlSensitivity = 0.05 // Longer window to detect quick taps
-	SoftDropSpeed = 0.05     // Faster soft drop speed for better responsiveness
-	SoftDropFriction = 0.1   // Less friction for smoother soft drops
-	TapMovePriority = true   // Always prioritize tap movement over DAS/ARR
-	InputBufferWindow = 0.1  // Input buffer window to capture inputs slightly early
+	DASDelay           = 0.033 // Reduced initial delay for more responsive control
+	ARRRate            = 0.033 // Faster repeat rate for better responsiveness
+	ControlSensitivity = 0.05  // Longer window to detect quick taps
+	SoftDropSpeed      = 0.05  // Faster soft drop speed for better responsiveness
+	SoftDropFriction   = 0.1   // Less friction for smoother soft drops
+	TapMovePriority    = true  // Always prioritize tap movement over DAS/ARR
+	InputBufferWindow  = 0.1   // Input buffer window to capture inputs slightly early
 )
 
 var gameBoard Board
@@ -139,20 +139,45 @@ func main() {
 
 // run is the main code for the game. Allows pixelgl to run on main thread
 func run() {
-	// Initialize the window
+	// Initialize the window with minimum size constraints
 	windowWidth := 765.0
 	windowHeight := 450.0
+	minWindowWidth := 640.0  // Minimum width to keep UI elements usable
+	minWindowHeight := 400.0 // Minimum height to keep UI elements usable
+
 	cfg := pixelgl.WindowConfig{
 		Title:  "Blockfall",
 		Bounds: pixel.R(0, 0, windowWidth, windowHeight),
 		VSync:  true,
 		// VSync will help limit refresh rate
-		Monitor: nil,
+		Monitor:   nil,
+		Resizable: true, // Allow window resizing
 	}
 	win, err := pixelgl.NewWindow(cfg)
 	if err != nil {
 		panic(err)
 	}
+
+	// Track initial/reference dimensions for scaling calculations
+	initialWidth := windowWidth
+	initialHeight := windowHeight
+
+	// Store initial layout positions and sizes for responsive scaling
+	const initialBoardOffsetX = 282.0
+	const initialBoardOffsetY = 25.0
+	const initialNextPieceX = 182.0
+	const initialNextPieceY = 225.0
+	const initialHoldPieceX = 182.0
+	const initialHoldPieceY = 325.0
+	const initialScoreX = 500.0
+	const initialScoreY = 400.0
+	const initialNextPieceTxtX = 142.0
+	const initialNextPieceTxtY = 285.0
+	const initialHoldPieceTxtX = 142.0
+	const initialHoldPieceTxtY = 385.0
+
+	// Track UI scale factor (will be updated based on window size)
+	uiScaleFactor := 1.0
 
 	// Load Various Resources:
 	// Matriax on opengameart.org
@@ -194,19 +219,15 @@ func run() {
 	frameDuration := time.Second / targetFPS
 	last := time.Now()
 
-	// Batch background draw operations
-	bgBatch := pixel.NewBatch(&pixel.TrianglesData{}, bgImgSprite.Picture())
-	gameBGBatch := pixel.NewBatch(&pixel.TrianglesData{}, gameBGSprite.Picture())
-
 	// Create and reuse text objects
 	basicAtlas := text.NewAtlas(basicfont.Face7x13, text.ASCII)
-	scoreTxt := text.New(pixel.V(500.0, 400.0), basicAtlas)
-	nextPieceTxt := text.New(pixel.V(142.0, 285.0), basicAtlas)
-	holdPieceTxt := text.New(pixel.V(142.0, 385.0), basicAtlas)
+	scoreTxt := text.New(pixel.V(initialScoreX, initialScoreY), basicAtlas)
+	nextPieceTxt := text.New(pixel.V(initialNextPieceTxtX, initialNextPieceTxtY), basicAtlas)
+	holdPieceTxt := text.New(pixel.V(initialHoldPieceTxtX, initialHoldPieceTxtY), basicAtlas)
 
-	// Draw backgrounds to batches once - use these variables
-	bgImgSprite.Draw(bgBatch, pixel.IM.Moved(pixel.V(windowWidth/2, windowHeight/2)))
-	gameBGSprite.Draw(gameBGBatch, pixel.IM.Moved(pixel.V(windowWidth/2, windowHeight/2)))
+	// Store previous window size to detect changes
+	prevWinWidth := win.Bounds().W()
+	prevWinHeight := win.Bounds().H()
 
 	for !win.Closed() && !gameOver {
 		frameStart := time.Now()
@@ -218,6 +239,42 @@ func run() {
 		// Don't use too small time steps
 		if dt > 0.25 {
 			dt = 0.25 // Cap to reasonable value
+		}
+
+		// Check if window size changed and update scaling factors
+		currWinWidth := win.Bounds().W()
+		currWinHeight := win.Bounds().H()
+
+		if currWinWidth != prevWinWidth || currWinHeight != prevWinHeight {
+			// Enforce minimum window size by resizing the window if it's too small
+			if currWinWidth < minWindowWidth || currWinHeight < minWindowHeight {
+				newWidth := math.Max(currWinWidth, minWindowWidth)
+				newHeight := math.Max(currWinHeight, minWindowHeight)
+				win.SetBounds(pixel.R(
+					win.Bounds().Min.X,
+					win.Bounds().Min.Y,
+					win.Bounds().Min.X+newWidth,
+					win.Bounds().Min.Y+newHeight,
+				))
+				currWinWidth = newWidth
+				currWinHeight = newHeight
+			}
+
+			// Recalculate UI scale factor based on the smaller dimension ratio to preserve aspect ratio
+			widthRatio := currWinWidth / initialWidth
+			heightRatio := currWinHeight / initialHeight
+
+			// Use the smaller ratio to ensure everything fits
+			uiScaleFactor = math.Min(widthRatio, heightRatio)
+
+			// Update position of text elements for new window size
+			scoreTxt = text.New(pixel.V(initialScoreX*widthRatio, initialScoreY*heightRatio), basicAtlas)
+			nextPieceTxt = text.New(pixel.V(initialNextPieceTxtX*widthRatio, initialNextPieceTxtY*heightRatio), basicAtlas)
+			holdPieceTxt = text.New(pixel.V(initialHoldPieceTxtX*widthRatio, initialHoldPieceTxtY*heightRatio), basicAtlas)
+
+			// Update tracked window size
+			prevWinWidth = currWinWidth
+			prevWinHeight = currWinHeight
 		}
 
 		// Update input buffer - clear expired inputs
@@ -475,16 +532,39 @@ func run() {
 		// Render at higher priority - move earlier in the frame
 		win.Clear(colornames.Black)
 
-		// Draw static backgrounds
-		bgImgSprite.Draw(win, pixel.IM.Moved(win.Bounds().Center()))
-		gameBGSprite.Draw(win, pixel.IM.Moved(win.Bounds().Center()))
-		nextPieceBGSprite.Draw(win, pixel.IM.Moved(pixel.V(182, 225)))
+		// Calculate center position based on current window dimensions
+		windowCenter := win.Bounds().Center()
 
-		// Display text content - reuse text objects
-		displayText(win, scoreTxt, nextPieceTxt, holdPieceTxt)
+		// Draw backgrounds with responsive positioning
+		// Background scales to fill entire window while maintaining aspect ratio
+		bgScale := math.Max(win.Bounds().W()/bgImgSprite.Frame().W(), win.Bounds().H()/bgImgSprite.Frame().H())
+		bgImgSprite.Draw(win, pixel.IM.Scaled(pixel.ZV, bgScale).Moved(windowCenter))
 
-		displayHoldPiece(win)
-		displayNextPiece(win)
+		// Game board background scales based on UI scale factor
+		gameScale := uiScaleFactor
+		gameBGPos := pixel.V(windowCenter.X, windowCenter.Y)
+		gameBGSprite.Draw(win, pixel.IM.Scaled(pixel.ZV, gameScale).Moved(gameBGPos))
+
+		// Next piece and hold piece background
+		nextPiecePos := pixel.V(initialNextPieceX*uiScaleFactor, initialNextPieceY*uiScaleFactor)
+		holdPiecePos := pixel.V(initialHoldPieceX*uiScaleFactor, initialHoldPieceY*uiScaleFactor)
+
+		// Adjust positions based on window center offset
+		xOffset := (win.Bounds().W() - initialWidth*uiScaleFactor) / 2
+		yOffset := (win.Bounds().H() - initialHeight*uiScaleFactor) / 2
+
+		nextPiecePos = nextPiecePos.Add(pixel.V(xOffset, yOffset))
+		holdPiecePos = holdPiecePos.Add(pixel.V(xOffset, yOffset))
+
+		nextPieceBGSprite.Draw(win, pixel.IM.Scaled(pixel.ZV, uiScaleFactor).Moved(nextPiecePos))
+		holdPieceBGSprite.Draw(win, pixel.IM.Scaled(pixel.ZV, uiScaleFactor).Moved(holdPiecePos))
+
+		// Display text content - reuse text objects with adjusted positions
+		displayText(win, scoreTxt, nextPieceTxt, holdPieceTxt, uiScaleFactor)
+
+		// Display game elements with responsive scaling
+		displayHoldPiece(win, uiScaleFactor, xOffset, yOffset)
+		displayNextPiece(win, uiScaleFactor, xOffset, yOffset)
 		gameBoard.displayBoard(win)
 
 		win.Update()
@@ -501,42 +581,50 @@ func run() {
 	}
 }
 
-func displayText(win *pixelgl.Window, scoreTxt, nextPieceTxt, holdPieceTxt *text.Text) {
+func displayText(win *pixelgl.Window, scoreTxt, nextPieceTxt, holdPieceTxt *text.Text, uiScaleFactor float64) {
 	// Update and draw score
 	scoreTxt.Clear()
 	fmt.Fprintf(scoreTxt, "Score: %d", score)
-	scoreTxt.Draw(win, pixel.IM.Scaled(scoreTxt.Orig, 2))
+	scoreTxt.Draw(win, pixel.IM.Scaled(scoreTxt.Orig, 2*uiScaleFactor))
 
 	// Draw static text for next and hold pieces
 	nextPieceTxt.Clear()
 	fmt.Fprintf(nextPieceTxt, "Next Piece:")
-	nextPieceTxt.Draw(win, pixel.IM)
+	nextPieceTxt.Draw(win, pixel.IM.Scaled(nextPieceTxt.Orig, uiScaleFactor))
 
 	holdPieceTxt.Clear()
 	fmt.Fprintf(holdPieceTxt, "Hold Piece:")
-	holdPieceTxt.Draw(win, pixel.IM)
+	holdPieceTxt.Draw(win, pixel.IM.Scaled(holdPieceTxt.Orig, uiScaleFactor))
 }
 
 // Separate next piece display to its own function
-func displayNextPiece(win *pixelgl.Window) {
+func displayNextPiece(win *pixelgl.Window, uiScaleFactor float64, xOffset, yOffset float64) {
 	baseShape := getShapeFromPiece(nextPiece)
 	pic := blockGen(block2spriteIdx(piece2Block(nextPiece)))
 	sprite := pixel.NewSprite(pic, pic.Bounds())
-	boardBlockSize := 20.0
+	boardBlockSize := 20.0 * uiScaleFactor
 	scaleFactor := float64(boardBlockSize) / pic.Bounds().Max.Y
 	shapeWidth := getShapeWidth(baseShape) + 1
 	shapeHeight := 2
+
+	initialNextPieceX := 182.0
+	initialNextPieceY := 225.0
 
 	for i := 0; i < 4; i++ {
 		r := baseShape[i].row
 		c := baseShape[i].col
 		x := float64(c)*boardBlockSize + boardBlockSize/2
 		y := float64(r)*boardBlockSize + boardBlockSize/2
-		sprite.Draw(win, pixel.IM.Scaled(pixel.ZV, scaleFactor).Moved(pixel.V(x+182-(float64(shapeWidth)*10), y+225-(float64(shapeHeight)*10))))
+
+		// Position calculation with scaling and offset
+		posX := x + initialNextPieceX*uiScaleFactor - (float64(shapeWidth) * 10 * uiScaleFactor) + xOffset
+		posY := y + initialNextPieceY*uiScaleFactor - (float64(shapeHeight) * 10 * uiScaleFactor) + yOffset
+
+		sprite.Draw(win, pixel.IM.Scaled(pixel.ZV, scaleFactor).Moved(pixel.V(posX, posY)))
 	}
 }
 
-func displayHoldPiece(win *pixelgl.Window) {
+func displayHoldPiece(win *pixelgl.Window, uiScaleFactor float64, xOffset, yOffset float64) {
 	if holdPiece == NoPiece {
 		return
 	}
@@ -545,19 +633,29 @@ func displayHoldPiece(win *pixelgl.Window) {
 	baseShape := getShapeFromPiece(holdPiece)
 	pic := blockGen(block2spriteIdx(piece2Block(holdPiece)))
 	sprite := pixel.NewSprite(pic, pic.Bounds())
-	boardBlockSize := 20.0
+	boardBlockSize := 20.0 * uiScaleFactor
 	scaleFactor := float64(boardBlockSize) / pic.Bounds().Max.Y
 	shapeWidth := getShapeWidth(baseShape) + 1
 	shapeHeight := 2
 
-	holdPieceBGSprite.Draw(win, pixel.IM.Moved(pixel.V(182, 325)))
+	initialHoldPieceX := 182.0
+	initialHoldPieceY := 325.0
+
+	// Draw the hold piece background with scaling
+	holdPiecePos := pixel.V(initialHoldPieceX*uiScaleFactor+xOffset, initialHoldPieceY*uiScaleFactor+yOffset)
+	holdPieceBGSprite.Draw(win, pixel.IM.Scaled(pixel.ZV, uiScaleFactor).Moved(holdPiecePos))
 
 	for i := 0; i < 4; i++ {
 		r := baseShape[i].row
 		c := baseShape[i].col
 		x := float64(c)*boardBlockSize + boardBlockSize/2
 		y := float64(r)*boardBlockSize + boardBlockSize/2
-		sprite.Draw(win, pixel.IM.Scaled(pixel.ZV, scaleFactor).Moved(pixel.V(x+182-(float64(shapeWidth)*10), y+325-(float64(shapeHeight)*10))))
+
+		// Position calculation with scaling and offset
+		posX := x + initialHoldPieceX*uiScaleFactor - (float64(shapeWidth) * 10 * uiScaleFactor) + xOffset
+		posY := y + initialHoldPieceY*uiScaleFactor - (float64(shapeHeight) * 10 * uiScaleFactor) + yOffset
+
+		sprite.Draw(win, pixel.IM.Scaled(pixel.ZV, scaleFactor).Moved(pixel.V(posX, posY)))
 	}
 }
 

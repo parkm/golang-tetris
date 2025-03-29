@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"math/rand"
 
 	"github.com/faiface/pixel"
@@ -93,9 +94,9 @@ func (b *Board) rotatePiece(direction int) bool {
 	if !rotated {
 		// Extremely aggressive last resort kicks - will almost always find a spot
 		lastResortKicks := [][2]int{
-			{0, 4}, {4, 0}, {0, -4}, {-4, 0},  // Far kicks
+			{0, 4}, {4, 0}, {0, -4}, {-4, 0}, // Far kicks
 			{3, 3}, {-3, 3}, {3, -3}, {-3, -3}, // Corner kicks
-			{5, 0}, {0, 5}, {-5, 0}, {0, -5},  // Very far kicks
+			{5, 0}, {0, 5}, {-5, 0}, {0, -5}, // Very far kicks
 		}
 
 		for _, kick := range lastResortKicks {
@@ -172,7 +173,7 @@ func (b *Board) lockPiece() {
 		return
 	}
 	b.checkRowCompletion(activeShape)
-	b.addPiece() // Replace with random piece
+	b.addPiece()   // Replace with random piece
 	canHold = true // Enable hold for the next piece
 }
 
@@ -358,20 +359,33 @@ func (b *Board) addPiece() {
 	currentPiece = nextPiece
 	activeShape = baseShape
 	nextPiece = getNextPiece() // Use 7-bag system instead of random
-	rotationState = 0 // Reset rotation state for new piece
+	rotationState = 0          // Reset rotation state for new piece
 }
 
 // displayBoard displays a particular game board with all of its pieces
-// onto a given window, win
+// onto a given window, win with support for responsive scaling
 func (b *Board) displayBoard(win *pixelgl.Window) {
-	boardBlockSize := 20.0
+	// Get UI scale factor and offsets from the window's current size
+	// Base scale is 1.0 at the initial window size of 765x450
+	initialWidth := 765.0
+	initialHeight := 450.0
+	widthRatio := win.Bounds().W() / initialWidth
+	heightRatio := win.Bounds().H() / initialHeight
+	uiScaleFactor := math.Min(widthRatio, heightRatio)
+
+	// Calculate center offsets
+	xOffset := (win.Bounds().W() - initialWidth*uiScaleFactor) / 2
+	yOffset := (win.Bounds().H() - initialHeight*uiScaleFactor) / 2
+
+	// Scale the board block size based on UI scale
+	boardBlockSize := 20.0 * uiScaleFactor
 	pic := blockGen(0)
 	imgSize := pic.Bounds().Max.X
 	scaleFactor := float64(boardBlockSize) / float64(imgSize)
 
-	// Use consistent offsets for proper grid alignment
-	const boardOffsetX = 282.0
-	const boardOffsetY = 25.0
+	// Use consistent offsets for proper grid alignment, scaled for window size
+	boardOffsetX := 282.0*uiScaleFactor + xOffset
+	boardOffsetY := 25.0*uiScaleFactor + yOffset
 
 	// Create a map to cache sprites for each block type
 	spriteCache := make(map[Block]*pixel.Sprite, 16)
