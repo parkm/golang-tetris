@@ -81,8 +81,13 @@ const speedUpRate = 0.1  // Every new level, the amount the game speeds up by
 
 // DAS (Delayed Auto Shift) and ARR (Auto Repeat Rate) constants
 const (
-	DASDelay = 0.17  // Delay before auto-shifting starts (in seconds)
-	ARRRate  = 0.033 // Time between shifts once auto-shift starts (in seconds)
+	DASDelay = 0.033         // Reduced initial delay for more responsive control
+	ARRRate  = 0.033         // Faster repeat rate for better responsiveness
+	ControlSensitivity = 0.05 // Longer window to detect quick taps
+	SoftDropSpeed = 0.05     // Faster soft drop speed for better responsiveness
+	SoftDropFriction = 0.1   // Less friction for smoother soft drops
+	TapMovePriority = true   // Always prioritize tap movement over DAS/ARR
+	InputBufferWindow = 0.1  // Input buffer window to capture inputs slightly early
 )
 
 var gameBoard Board
@@ -91,22 +96,34 @@ var currentPiece Piece
 var gravityTimer float64
 var baseSpeed float64 = 0.8
 var gravitySpeed float64 = 0.8
-var lockDelay float64 = 0.5 // Time before piece locks when on ground
+var lockDelay float64 = 0.25 // Slightly increased for better placement opportunity
 var lockDelayTimer float64 = 0
-var lockResets int = 0      // Count lock delay resets (limit to 15)
+var lockResets int = 0
+var maxLockResets int = 30
 var levelUpTimer float64 = levelLength
 var gameOver bool = false
-var leftRightTimer float64      // Timer for left/right movement DAS
-var ARRTimer float64            // Timer for ARR
-var lastMoveDirection int = 0   // Last direction moved (-1 left, 1 right)
+var leftRightTimer float64
+var ARRTimer float64
+var lastMoveDirection int = 0
+var keyReleaseTimer float64 = 0
+var lastKeyReleaseTime float64 = 0
+var isTapMovement bool = false
+var inputBuffer map[pixelgl.Button]float64 = make(map[pixelgl.Button]float64) // New input buffer system
 var score int
 var nextPiece Piece
-var holdPiece Piece = NoPiece   // Piece being held
-var canHold bool = true         // Whether player can hold a piece
-var rotationState int = 0       // Current rotation state (0-3)
-var pieceBag []Piece = nil      // 7-bag system for randomization
-var lastMovementWasRotation bool = false // Used for T-spin detection
-var lastRotationPoint Shape      // The shape before last rotation (for T-spin detection)
+var holdPiece Piece = NoPiece
+var canHold bool = true
+var rotationState int = 0
+var pieceBag []Piece = nil
+var lastMovementWasRotation bool = false
+var lastRotationPoint Shape
+var rotationCooldown float64 = 0.0
+var rotationDirection int = 0
+var lastTapTime float64 = 0
+var visualFeedbackActive bool = false
+var softDropFrictionTimer float64 = 0
+var lastSoftDropTime float64 = 0
+var movementSmoothing bool = true // Enable movement smoothing for transitions
 
 var blockGen func(int) pixel.Picture
 var bgImgSprite pixel.Sprite
@@ -173,7 +190,7 @@ func run() {
 	gameBoard.addPiece() // Add initial Piece to game
 
 	// Set up frame limiter for consistent timing and reduced CPU usage
-	const targetFPS = 60
+	const targetFPS = 120 // Increased FPS for smoother rendering
 	frameDuration := time.Second / targetFPS
 	last := time.Now()
 
@@ -203,6 +220,16 @@ func run() {
 			dt = 0.25 // Cap to reasonable value
 		}
 
+		// Update input buffer - clear expired inputs
+		for key, timestamp := range inputBuffer {
+			timestamp -= dt
+			if timestamp <= 0 {
+				delete(inputBuffer, key)
+			} else {
+				inputBuffer[key] = timestamp
+			}
+		}
+
 		gravityTimer += dt
 		levelUpTimer -= dt
 
@@ -221,7 +248,7 @@ func run() {
 		// Time Functions:
 		// Gravity
 		if gravityTimer > gravitySpeed {
-			gravityTimer -= gravitySpeed
+			gravityTimer = 0 // Reset completely for more consistent timing
 			didCollide := gameBoard.applyGravity()
 			if didCollide {
 				score += 10
@@ -230,94 +257,222 @@ func run() {
 
 		// Speed up
 		if levelUpTimer <= 0 {
-			if baseSpeed > 0.2 {
-				baseSpeed = math.Max(baseSpeed-speedUpRate, 0.2)
+			if baseSpeed > 0.1 {
+				baseSpeed = math.Max(baseSpeed-speedUpRate, 0.1)
 			}
 			levelUpTimer = levelLength
 			gravitySpeed = baseSpeed
 		}
 
-		// DAS and ARR movement implementation
+		// Input handling with prioritization and immediate response
+		leftPressed := win.Pressed(pixelgl.KeyLeft)
+		rightPressed := win.Pressed(pixelgl.KeyRight)
+
+		// Buffer all new key presses for responsive control
+		if win.JustPressed(pixelgl.KeyLeft) {
+			inputBuffer[pixelgl.KeyLeft] = InputBufferWindow
+			keyReleaseTimer = 0
+			isTapMovement = true
+
+			// Use the debounced movement system for consistent feel
+			processMoveWithBounce(win, -1)
+		}
+
+		if win.JustPressed(pixelgl.KeyRight) {
+			inputBuffer[pixelgl.KeyRight] = InputBufferWindow
+			keyReleaseTimer = 0
+			isTapMovement = true
+
+			// Use the debounced movement system for consistent feel
+			processMoveWithBounce(win, 1)
+		}
+
+		// Process key releases with improved tap detection
+		if win.JustReleased(pixelgl.KeyLeft) || win.JustReleased(pixelgl.KeyRight) {
+			lastKeyReleaseTime = 0
+
+			// Short taps get special treatment for precision movement
+			if keyReleaseTimer < ControlSensitivity {
+				isTapMovement = false
+
+				// Reset auto-repeat system to prevent unwanted movement
+				leftRightTimer = DASDelay * 1.5 // Add a small delay after taps for better control
+				ARRTimer = 0
+			}
+		}
+
+		// Update tap detection timer
+		if isTapMovement {
+			keyReleaseTimer += dt
+			if keyReleaseTimer > ControlSensitivity {
+				isTapMovement = false // No longer considered a tap after sensitivity threshold
+			}
+		}
+
+		// Determine movement direction with intelligent conflict resolution
 		direction := 0
-		if win.Pressed(pixelgl.KeyRight) {
-			direction = 1
-		} else if win.Pressed(pixelgl.KeyLeft) {
+		if leftPressed && rightPressed {
+			// If both keys are pressed, use the most recently pressed one based on buffer
+			leftTime, hasLeft := inputBuffer[pixelgl.KeyLeft]
+			rightTime, hasRight := inputBuffer[pixelgl.KeyRight]
+
+			if hasLeft && hasRight {
+				if leftTime > rightTime {
+					direction = -1
+				} else {
+					direction = 1
+				}
+			} else if hasLeft {
+				direction = -1
+			} else if hasRight {
+				direction = 1
+			} else if lastMoveDirection != 0 {
+				direction = lastMoveDirection
+			}
+		} else if leftPressed {
 			direction = -1
+		} else if rightPressed {
+			direction = 1
 		} else {
+			// Reset DAS/ARR when no direction keys are pressed
 			leftRightTimer = 0
 			ARRTimer = 0
 			lastMoveDirection = 0
 		}
 
-		// Handle movement with DAS/ARR
+		// Handle movement with improved DAS/ARR system
 		if direction != 0 {
-			if direction != lastMoveDirection || leftRightTimer == 0 {
-				// Initial tap or direction change
-				gameBoard.movePiece(direction)
-				leftRightTimer = DASDelay
+			if direction != lastMoveDirection {
+				// Direction change - immediate movement for responsiveness
 				lastMoveDirection = direction
+				leftRightTimer = DASDelay
+				ARRTimer = 0
 
-				// Reset lock delay if moved and on ground (up to 15 times)
-				if gameBoard.isTouchingFloor() && lockResets < 15 {
-					lockDelayTimer = 0
-					lockResets++
+				// Only move here if we didn't already move in JustPressed
+				if !win.JustPressed(pixelgl.KeyLeft) && !win.JustPressed(pixelgl.KeyRight) {
+					processMoveWithBounce(win, direction)
 				}
-			} else {
-				// Auto-shift handling
+			} else if !isTapMovement {
+				// Auto-shift handling for held keys
 				leftRightTimer -= dt
 				if leftRightTimer <= 0 {
-					// DAS has been charged, use ARR
+					// DAS charged, use ARR for repeated movement
 					ARRTimer += dt
 					if ARRTimer >= ARRRate {
-						gameBoard.movePiece(direction)
-						ARRTimer -= ARRRate
+						// Reset ARR immediately for more consistent repeat rate
+						ARRTimer = 0
 
-						// Reset lock delay if moved and on ground (up to 15 times)
-						if gameBoard.isTouchingFloor() && lockResets < 15 {
-							lockDelayTimer = 0
-							lockResets++
-						}
+						// Process movement with debouncing for smoother feel
+						processMoveWithBounce(win, direction)
 					}
 				}
 			}
 		}
 
+		// Update rotation cooldown
+		if rotationCooldown > 0 {
+			rotationCooldown -= dt
+		}
+
+		// Faster, more responsive soft drop
 		if win.JustPressed(pixelgl.KeyDown) {
-			gravitySpeed = 0.05
-			if gravityTimer > 0.05 {
-				gravityTimer = 0.05
+			gravitySpeed = SoftDropSpeed
+			softDropFrictionTimer = 0
+			lastSoftDropTime = 0
+
+			// Immediate drop for responsiveness
+			gameBoard.applyGravity()
+		}
+
+		if win.Pressed(pixelgl.KeyDown) {
+			// More responsive soft drop system
+			if softDropFrictionTimer > 0 {
+				softDropFrictionTimer -= dt * 2 // Faster friction reduction
+			}
+
+			lastSoftDropTime += dt
+
+			// More aggressive friction reduction for smoother continuous drops
+			if lastSoftDropTime > 0.15 && softDropFrictionTimer > 0 {
+				softDropFrictionTimer = 0 // Just clear it completely after a short delay
+			}
+
+			// Apply soft drop gravity with less friction
+			if softDropFrictionTimer <= 0 {
+				if gameBoard.applyGravity() {
+					softDropFrictionTimer = SoftDropFriction
+					lastSoftDropTime = 0
+				}
 			}
 		}
+
 		if win.JustReleased(pixelgl.KeyDown) {
 			gravitySpeed = baseSpeed
+			softDropFrictionTimer = 0
 		}
+
+		// More responsive rotation with reduced cooldown
 		if win.JustPressed(pixelgl.KeyUp) {
-			gameBoard.rotatePiece(1) // Clockwise rotation
+			if rotationCooldown <= 0 {
+				rotationSucceeded := gameBoard.rotatePiece(1) // Clockwise rotation
+				if rotationSucceeded {
+					rotationDirection = 1
 
-			// Reset lock delay if rotated and on ground (up to 15 times)
-			if gameBoard.isTouchingFloor() && lockResets < 15 {
-				lockDelayTimer = 0
-				lockResets++
+					// Reset lock delay if rotated and on ground
+					if gameBoard.isTouchingFloor() && lockResets < maxLockResets {
+						lockDelayTimer = 0
+						lockResets++
+					}
+
+					// Shorter rotation cooldown for more responsive feel
+					rotationCooldown = 0.03
+				}
 			}
 		}
+
 		if win.JustPressed(pixelgl.KeyZ) {
-			gameBoard.rotatePiece(-1) // Counter-clockwise rotation
+			if rotationCooldown <= 0 {
+				rotationSucceeded := gameBoard.rotatePiece(-1) // Counter-clockwise rotation
+				if rotationSucceeded {
+					rotationDirection = -1
 
-			// Reset lock delay if rotated and on ground (up to 15 times)
-			if gameBoard.isTouchingFloor() && lockResets < 15 {
-				lockDelayTimer = 0
-				lockResets++
+					// Reset lock delay if rotated and on ground
+					if gameBoard.isTouchingFloor() && lockResets < maxLockResets {
+						lockDelayTimer = 0
+						lockResets++
+					}
+
+					// Shorter rotation cooldown for more responsive feel
+					rotationCooldown = 0.03
+				}
 			}
 		}
+
+		// More responsive hard drop
 		if win.JustPressed(pixelgl.KeySpace) {
+			// Skip the visual feedback drop and go straight to hard drop for immediate response
+			preHardDropRow := activeShape[0].row
 			gameBoard.instafall()
-			score += 12
+
+			// Scoring based on distance dropped
+			dropDistance := preHardDropRow - activeShape[0].row
+			score += 20 + dropDistance
 		}
+
+		// More responsive hold
 		if win.JustPressed(pixelgl.KeyC) && canHold {
 			gameBoard.holdPiece()
 		}
 
-		// Display Functions - Only redraw if something changed
+		// Enhanced visual feedback
+		if visualFeedbackActive {
+			lastTapTime += dt
+			if lastTapTime > 0.08 { // Shorter duration for snappier feedback
+				visualFeedbackActive = false
+			}
+		}
+
+		// Render at higher priority - move earlier in the frame
 		win.Clear(colornames.Black)
 
 		// Draw static backgrounds
@@ -334,10 +489,14 @@ func run() {
 
 		win.Update()
 
-		// Sleep to maintain target frame rate
+		// More responsive frame timing - minimize sleep when possible
 		elapsed := time.Since(frameStart)
 		if elapsed < frameDuration {
-			time.Sleep(frameDuration - elapsed)
+			sleepDuration := frameDuration - elapsed
+			// Only sleep if we have more than 1ms to wait
+			if sleepDuration > time.Millisecond {
+				time.Sleep(sleepDuration)
+			}
 		}
 	}
 }
@@ -502,4 +661,30 @@ func isTSpin(board Board) bool {
 
 	// Require at least 3 corners to be blocked for a T-spin
 	return blockedCorners >= 3
+}
+
+// isInputBuffered checks if a specific input is in the buffer and active
+func isInputBuffered(key pixelgl.Button) bool {
+	val, exists := inputBuffer[key]
+	return exists && val > 0
+}
+
+// processMoveWithBounce processes directional movement with debouncing to prevent input stuttering
+func processMoveWithBounce(win *pixelgl.Window, direction int) bool {
+	// Always move at least once for snappy feel
+	moveSucceeded := gameBoard.movePiece(direction)
+
+	if moveSucceeded {
+		lastTapTime = 0
+		visualFeedbackActive = true
+
+		// Reset lock delay if moved and on ground
+		if gameBoard.isTouchingFloor() && lockResets < maxLockResets {
+			lockDelayTimer = 0
+			lockResets++
+		}
+		return true
+	}
+
+	return false
 }
