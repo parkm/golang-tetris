@@ -115,6 +115,8 @@ var nextPieceBGSprite pixel.Sprite
 var holdPieceBGSprite pixel.Sprite
 
 func main() {
+	// Ensure random number generator is seeded properly
+	rand.Seed(time.Now().UnixNano())
 	pixelgl.Run(run)
 }
 
@@ -127,6 +129,8 @@ func run() {
 		Title:  "Blockfall",
 		Bounds: pixel.R(0, 0, windowWidth, windowHeight),
 		VSync:  true,
+		// VSync will help limit refresh rate
+		Monitor: nil,
 	}
 	win, err := pixelgl.NewWindow(cfg)
 	if err != nil {
@@ -167,11 +171,38 @@ func run() {
 
 	nextPiece = getNextPiece()
 	gameBoard.addPiece() // Add initial Piece to game
+
+	// Set up frame limiter for consistent timing and reduced CPU usage
+	const targetFPS = 60
+	frameDuration := time.Second / targetFPS
 	last := time.Now()
+
+	// Batch background draw operations
+	bgBatch := pixel.NewBatch(&pixel.TrianglesData{}, bgImgSprite.Picture())
+	gameBGBatch := pixel.NewBatch(&pixel.TrianglesData{}, gameBGSprite.Picture())
+
+	// Create and reuse text objects
+	basicAtlas := text.NewAtlas(basicfont.Face7x13, text.ASCII)
+	scoreTxt := text.New(pixel.V(500.0, 400.0), basicAtlas)
+	nextPieceTxt := text.New(pixel.V(142.0, 285.0), basicAtlas)
+	holdPieceTxt := text.New(pixel.V(142.0, 385.0), basicAtlas)
+
+	// Draw backgrounds to batches once - use these variables
+	bgImgSprite.Draw(bgBatch, pixel.IM.Moved(pixel.V(windowWidth/2, windowHeight/2)))
+	gameBGSprite.Draw(gameBGBatch, pixel.IM.Moved(pixel.V(windowWidth/2, windowHeight/2)))
+
 	for !win.Closed() && !gameOver {
+		frameStart := time.Now()
+
 		// Perform time processing events
 		dt := time.Since(last).Seconds()
 		last = time.Now()
+
+		// Don't use too small time steps
+		if dt > 0.25 {
+			dt = 0.25 // Cap to reasonable value
+		}
+
 		gravityTimer += dt
 		levelUpTimer -= dt
 
@@ -286,36 +317,64 @@ func run() {
 			gameBoard.holdPiece()
 		}
 
-		// Display Functions
+		// Display Functions - Only redraw if something changed
 		win.Clear(colornames.Black)
-		displayBG(win)
-		displayText(win)
+
+		// Draw static backgrounds
+		bgImgSprite.Draw(win, pixel.IM.Moved(win.Bounds().Center()))
+		gameBGSprite.Draw(win, pixel.IM.Moved(win.Bounds().Center()))
+		nextPieceBGSprite.Draw(win, pixel.IM.Moved(pixel.V(182, 225)))
+
+		// Display text content - reuse text objects
+		displayText(win, scoreTxt, nextPieceTxt, holdPieceTxt)
+
 		displayHoldPiece(win)
+		displayNextPiece(win)
 		gameBoard.displayBoard(win)
+
 		win.Update()
+
+		// Sleep to maintain target frame rate
+		elapsed := time.Since(frameStart)
+		if elapsed < frameDuration {
+			time.Sleep(frameDuration - elapsed)
+		}
 	}
 }
 
-func displayText(win *pixelgl.Window) {
-	// Text Generator
-	scoreTextLocX := 500.0
-	scoreTextLocY := 400.0
-	basicAtlas := text.NewAtlas(basicfont.Face7x13, text.ASCII)
-	scoreTxt := text.New(pixel.V(scoreTextLocX, scoreTextLocY), basicAtlas)
+func displayText(win *pixelgl.Window, scoreTxt, nextPieceTxt, holdPieceTxt *text.Text) {
+	// Update and draw score
+	scoreTxt.Clear()
 	fmt.Fprintf(scoreTxt, "Score: %d", score)
 	scoreTxt.Draw(win, pixel.IM.Scaled(scoreTxt.Orig, 2))
 
-	nextPieceTextLocX := 142.0
-	nextPieceTextLocY := 285.0
-	nextPieceTxt := text.New(pixel.V(nextPieceTextLocX, nextPieceTextLocY), basicAtlas)
+	// Draw static text for next and hold pieces
+	nextPieceTxt.Clear()
 	fmt.Fprintf(nextPieceTxt, "Next Piece:")
 	nextPieceTxt.Draw(win, pixel.IM)
 
-	holdPieceTextLocX := 142.0
-	holdPieceTextLocY := 385.0
-	holdPieceTxt := text.New(pixel.V(holdPieceTextLocX, holdPieceTextLocY), basicAtlas)
+	holdPieceTxt.Clear()
 	fmt.Fprintf(holdPieceTxt, "Hold Piece:")
 	holdPieceTxt.Draw(win, pixel.IM)
+}
+
+// Separate next piece display to its own function
+func displayNextPiece(win *pixelgl.Window) {
+	baseShape := getShapeFromPiece(nextPiece)
+	pic := blockGen(block2spriteIdx(piece2Block(nextPiece)))
+	sprite := pixel.NewSprite(pic, pic.Bounds())
+	boardBlockSize := 20.0
+	scaleFactor := float64(boardBlockSize) / pic.Bounds().Max.Y
+	shapeWidth := getShapeWidth(baseShape) + 1
+	shapeHeight := 2
+
+	for i := 0; i < 4; i++ {
+		r := baseShape[i].row
+		c := baseShape[i].col
+		x := float64(c)*boardBlockSize + boardBlockSize/2
+		y := float64(r)*boardBlockSize + boardBlockSize/2
+		sprite.Draw(win, pixel.IM.Scaled(pixel.ZV, scaleFactor).Moved(pixel.V(x+182-(float64(shapeWidth)*10), y+225-(float64(shapeHeight)*10))))
+	}
 }
 
 func displayHoldPiece(win *pixelgl.Window) {
@@ -340,30 +399,6 @@ func displayHoldPiece(win *pixelgl.Window) {
 		x := float64(c)*boardBlockSize + boardBlockSize/2
 		y := float64(r)*boardBlockSize + boardBlockSize/2
 		sprite.Draw(win, pixel.IM.Scaled(pixel.ZV, scaleFactor).Moved(pixel.V(x+182-(float64(shapeWidth)*10), y+325-(float64(shapeHeight)*10))))
-	}
-}
-
-func displayBG(win *pixelgl.Window) {
-	// Display various background images
-	bgImgSprite.Draw(win, pixel.IM.Moved(win.Bounds().Center()))
-	gameBGSprite.Draw(win, pixel.IM.Moved(win.Bounds().Center()))
-	nextPieceBGSprite.Draw(win, pixel.IM.Moved(pixel.V(182, 225)))
-
-	// Display next block
-	baseShape := getShapeFromPiece(nextPiece)
-	pic := blockGen(block2spriteIdx(piece2Block(nextPiece)))
-	sprite := pixel.NewSprite(pic, pic.Bounds())
-	boardBlockSize := 20.0
-	scaleFactor := float64(boardBlockSize) / pic.Bounds().Max.Y
-	shapeWidth := getShapeWidth(baseShape) + 1
-	shapeHeight := 2
-
-	for i := 0; i < 4; i++ {
-		r := baseShape[i].row
-		c := baseShape[i].col
-		x := float64(c)*boardBlockSize + boardBlockSize/2
-		y := float64(r)*boardBlockSize + boardBlockSize/2
-		sprite.Draw(win, pixel.IM.Scaled(pixel.ZV, scaleFactor).Moved(pixel.V(x+182-(float64(shapeWidth)*10), y+225-(float64(shapeHeight)*10))))
 	}
 }
 
@@ -396,6 +431,7 @@ func piece2Block(p Piece) Block {
 
 // initializeBag creates a new shuffled bag of all 7 pieces
 func initializeBag() {
+	// Always create a new slice to avoid issues with empty slices
 	pieceBag = make([]Piece, 7)
 
 	// Fill the bag with one of each piece
@@ -415,13 +451,23 @@ func getNextPiece() Piece {
 	// If bag is empty or nil, create a new one
 	if pieceBag == nil || len(pieceBag) == 0 {
 		initializeBag()
+		// Double check that bag was properly initialized
+		if len(pieceBag) == 0 {
+			// Emergency fallback - use a random piece if bag is still empty
+			return Piece(rand.Intn(7))
+		}
 	}
 
 	// Take the first piece from the bag
 	nextPiece := pieceBag[0]
 
 	// Remove the first piece from the bag
-	pieceBag = pieceBag[1:]
+	if len(pieceBag) > 1 {
+		pieceBag = pieceBag[1:]
+	} else {
+		// If this was the last piece, immediately refill the bag
+		initializeBag()
+	}
 
 	return nextPiece
 }

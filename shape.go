@@ -1,5 +1,13 @@
 package main
 
+import "sync"
+
+// Cache for rotated shapes to avoid recalculating them
+var (
+	rotationCacheMutex sync.RWMutex
+	rotationCache     = make(map[Piece]map[int]map[int]Shape) // Piece -> rotationState -> direction -> Shape
+)
+
 // moveShape shifts a shape in a directy according to a given row and column.
 func moveShape(r, c int, s Shape) Shape {
 	var newShape Shape
@@ -61,6 +69,29 @@ func getShapeHeight(s Shape) int {
 // rotateShape rotates a shape by 90 degrees based on the pivot point
 // which is always the second element in the shape array (ie s[1]).
 func rotateShape(s Shape) Shape {
+	// Special case: don't rotate O piece
+	if currentPiece == OPiece {
+		return s
+	}
+
+	// Check if the rotation is already cached
+	rotationCacheMutex.RLock()
+	if pieceCache, exists := rotationCache[currentPiece]; exists {
+		if stateCache, exists := pieceCache[rotationState]; exists {
+			if cachedShape, exists := stateCache[1]; exists {
+				// Need to make a clean copy to avoid modifying cached shape
+				var shapeCopy Shape
+				copy(shapeCopy[:], cachedShape[:])
+				// Adjust position based on the current shape's position
+				offsetRow := s[1].row - cachedShape[1].row
+				offsetCol := s[1].col - cachedShape[1].col
+				rotationCacheMutex.RUnlock()
+				return moveShape(offsetRow, offsetCol, shapeCopy)
+			}
+		}
+	}
+	rotationCacheMutex.RUnlock()
+
 	var retShape Shape
 	pivot := s[1]
 	retShape[1] = pivot
@@ -74,12 +105,52 @@ func rotateShape(s Shape) Shape {
 		retShape[i].row = pivot.row + (dCol * -1)
 		retShape[i].col = pivot.col + (dRow)
 	}
+
+	// Cache this rotation for future use
+	// Store only the basic shape (offset from 0,0) in the cache
+	offsetRow := -retShape[1].row
+	offsetCol := -retShape[1].col
+	normalizedShape := moveShape(offsetRow, offsetCol, retShape)
+
+	rotationCacheMutex.Lock()
+	if _, exists := rotationCache[currentPiece]; !exists {
+		rotationCache[currentPiece] = make(map[int]map[int]Shape)
+	}
+	if _, exists := rotationCache[currentPiece][rotationState]; !exists {
+		rotationCache[currentPiece][rotationState] = make(map[int]Shape)
+	}
+	rotationCache[currentPiece][rotationState][1] = normalizedShape
+	rotationCacheMutex.Unlock()
+
 	return retShape
 }
 
 // rotateShapeCounterClockwise rotates a shape 90 degrees counter-clockwise
 // based on the pivot point which is always the second element (s[1]).
 func rotateShapeCounterClockwise(s Shape) Shape {
+	// Special case: don't rotate O piece
+	if currentPiece == OPiece {
+		return s
+	}
+
+	// Check if the rotation is already cached
+	rotationCacheMutex.RLock()
+	if pieceCache, exists := rotationCache[currentPiece]; exists {
+		if stateCache, exists := pieceCache[rotationState]; exists {
+			if cachedShape, exists := stateCache[-1]; exists {
+				// Need to make a clean copy to avoid modifying cached shape
+				var shapeCopy Shape
+				copy(shapeCopy[:], cachedShape[:])
+				// Adjust position based on the current shape's position
+				offsetRow := s[1].row - cachedShape[1].row
+				offsetCol := s[1].col - cachedShape[1].col
+				rotationCacheMutex.RUnlock()
+				return moveShape(offsetRow, offsetCol, shapeCopy)
+			}
+		}
+	}
+	rotationCacheMutex.RUnlock()
+
 	var retShape Shape
 	pivot := s[1]
 	retShape[1] = pivot
@@ -93,6 +164,23 @@ func rotateShapeCounterClockwise(s Shape) Shape {
 		retShape[i].row = pivot.row + dCol
 		retShape[i].col = pivot.col + (dRow * -1)
 	}
+
+	// Cache this rotation for future use
+	// Store only the basic shape (offset from 0,0) in the cache
+	offsetRow := -retShape[1].row
+	offsetCol := -retShape[1].col
+	normalizedShape := moveShape(offsetRow, offsetCol, retShape)
+
+	rotationCacheMutex.Lock()
+	if _, exists := rotationCache[currentPiece]; !exists {
+		rotationCache[currentPiece] = make(map[int]map[int]Shape)
+	}
+	if _, exists := rotationCache[currentPiece][rotationState]; !exists {
+		rotationCache[currentPiece][rotationState] = make(map[int]Shape)
+	}
+	rotationCache[currentPiece][rotationState][-1] = normalizedShape
+	rotationCacheMutex.Unlock()
+
 	return retShape
 }
 

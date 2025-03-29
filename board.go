@@ -303,6 +303,9 @@ func (b *Board) displayBoard(win *pixelgl.Window) {
 	imgSize := pic.Bounds().Max.X
 	scaleFactor := float64(boardBlockSize) / float64(imgSize)
 
+	// Create a map to cache sprites for each block type
+	spriteCache := make(map[Block]*pixel.Sprite, 16)
+
 	for col := 0; col < BoardCols; col++ {
 		for row := 0; row < BoardRows-2; row++ {
 			val := b[row][col]
@@ -310,10 +313,16 @@ func (b *Board) displayBoard(win *pixelgl.Window) {
 				continue
 			}
 
+			// Get sprite from cache or create a new one
+			sprite, exists := spriteCache[val]
+			if !exists {
+				pic := blockGen(block2spriteIdx(val))
+				sprite = pixel.NewSprite(pic, pic.Bounds())
+				spriteCache[val] = sprite
+			}
+
 			x := float64(col)*boardBlockSize + boardBlockSize/2
 			y := float64(row)*boardBlockSize + boardBlockSize/2
-			pic := blockGen(block2spriteIdx(val))
-			sprite := pixel.NewSprite(pic, pic.Bounds())
 			sprite.Draw(win, pixel.IM.Scaled(pixel.ZV, scaleFactor).Moved(pixel.V(x+282, y+25)))
 		}
 	}
@@ -330,8 +339,14 @@ func (b *Board) displayBoard(win *pixelgl.Window) {
 	}
 	b.drawPiece(activeShape, pieceType)
 
-	gpic := blockGen(block2spriteIdx(Gray))
-	sprite := pixel.NewSprite(gpic, gpic.Bounds())
+	// Get ghost sprite from cache or create it
+	sprite, exists := spriteCache[Gray]
+	if !exists {
+		gpic := blockGen(block2spriteIdx(Gray))
+		sprite = pixel.NewSprite(gpic, gpic.Bounds())
+		spriteCache[Gray] = sprite
+	}
+
 	for i := 0; i < 4; i++ {
 		if b[ghostShape[i].row][ghostShape[i].col] == Empty {
 			x := float64(ghostShape[i].col)*boardBlockSize + boardBlockSize/2
